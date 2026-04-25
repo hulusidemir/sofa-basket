@@ -144,6 +144,27 @@
         .decision-banner .side.pass { color: var(--pass); }
         .decision-banner .side.mixed { color: var(--pass); }
         .decision-banner .side.nodata { color: var(--muted); }
+        .decision-banner .side.danger { color: var(--danger); }
+
+        .anomaly-badge {
+            margin: 0 16px 8px;
+            padding: 7px 12px;
+            background: rgba(245,159,0,0.10);
+            border: 1px solid rgba(245,159,0,0.40);
+            border-radius: 6px;
+            font-size: 12px;
+            color: var(--over);
+        }
+        .trap-badge {
+            margin: 0 16px 8px;
+            padding: 7px 12px;
+            background: rgba(239,83,80,0.10);
+            border: 1px solid rgba(239,83,80,0.40);
+            border-radius: 6px;
+            font-size: 12px;
+            color: var(--danger);
+            font-weight: 600;
+        }
         .decision-banner .confidence-bar {
             height: 6px; border-radius: 3px;
             background: var(--panel-2); overflow: hidden;
@@ -240,8 +261,11 @@
 
         .key-metrics {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(3, 1fr);
             border-bottom: 1px solid var(--border);
+        }
+        @media (max-width: 600px) {
+            .key-metrics { grid-template-columns: 1fr 1fr; }
         }
         .key-card {
             padding: 14px 18px;
@@ -459,6 +483,7 @@
         if (!side) return 'nodata';
         if (side.startsWith('ÜST')) return 'over';
         if (side.startsWith('ALT')) return 'under';
+        if (side.includes('TUZAK') || side.includes('UZAK')) return 'danger';
         if (side.startsWith('Karışık')) return 'mixed';
         if (side === 'Pas') return 'pass';
         return 'nodata';
@@ -492,17 +517,42 @@
         const sigmaHtml = a.sigma
             ? `<span class="unit"> ±${a.sigma}</span>`
             : '';
+
+        const fairValue   = a.fair_value  != null ? a.fair_value  : '—';
+        const targetPpm   = a.target_ppm  != null ? a.target_ppm  : '—';
+        const empVal      = a.emp         != null ? a.emp.toFixed(1) : '—';
+        const rawProj     = a.raw_projected_total != null ? a.raw_projected_total : (projected !== '—' ? projected : '—');
+        const baseTotal   = a.base_total  != null ? a.base_total  : '—';
+        const regWeight   = a.regression_weight != null
+            ? (a.regression_weight * 100).toFixed(0) + '%' : '—';
+        const currentPpm  = a.current_ppm != null ? a.current_ppm : (rawPace !== '—' ? rawPace : '—');
+
+        const anomalyHtml = a.anomaly
+            ? `<div class="anomaly-badge">⚠ ${escapeHtml(a.anomaly)}</div>` : '';
+
+        const trapDiffVal = (a.fair_value != null && data.live_line != null)
+            ? (a.fair_value - data.live_line) : null;
+        const trapSign    = trapDiffVal != null ? (trapDiffVal >= 0 ? '+' : '') + trapDiffVal.toFixed(1) : '?';
+        const trapHtml    = a.trap
+            ? `<div class="trap-badge">🔴 TUZAK: Fair Value ${fairValue} — Barem ${data.live_line ?? '?'} = ${trapSign} puan fark</div>` : '';
+
         const keyMetricsHtml = `
+          ${anomalyHtml}${trapHtml}
           <div class="key-metrics">
             <div class="key-card">
-              <div class="kh">Projeksiyon</div>
-              <div class="kv">${projected !== '—' ? projected : '—'}${sigmaHtml}</div>
-              <div class="ksub">Mevcut: ${a.current_total ?? '—'} &nbsp;·&nbsp; Lig beklentisi: ${a.league_expected_total ?? '—'}</div>
+              <div class="kh">Ham Projeksiyon</div>
+              <div class="kv">${rawProj}${sigmaHtml}</div>
+              <div class="ksub">Mevcut: ${a.current_total ?? '—'} &nbsp;·&nbsp; EMP: ${empVal} dk &nbsp;·&nbsp; Lig bekl: ${a.league_expected_total ?? '—'}</div>
+            </div>
+            <div class="key-card" style="border-left:2px solid rgba(94,203,132,0.5); border-right:2px solid rgba(94,203,132,0.5); background:rgba(94,203,132,0.06);">
+              <div class="kh">Fair Value (DNA)</div>
+              <div class="kv" style="color:var(--under);">${fairValue}</div>
+              <div class="ksub">Base: ${baseTotal} &nbsp;·&nbsp; Regresyon: ${regWeight}</div>
             </div>
             <div class="key-card">
-              <div class="kh">Mevcut PPM</div>
-              <div class="kv">${rawPace !== '—' ? rawPace : '—'}<span class="unit"> sayı/dk</span></div>
-              <div class="ksub">Lig ort: ${a.baseline_ppm ?? '—'} &nbsp;·&nbsp; Hız idx: ${a.pace_index ?? '—'} &nbsp;·&nbsp; ${escapeHtml(a.pace_label || '—')}</div>
+              <div class="kh">PPM &nbsp;/&nbsp; Hedef PPM</div>
+              <div class="kv">${currentPpm}<span class="unit"> sayı/dk</span></div>
+              <div class="ksub">Lig: ${a.baseline_ppm ?? '—'} &nbsp;·&nbsp; Hedef: ${targetPpm} &nbsp;·&nbsp; ${escapeHtml(a.pace_label || '—')}</div>
             </div>
           </div>
         `;

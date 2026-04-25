@@ -45,6 +45,18 @@ STYLE_LABELS_TR: dict[str, str] = {
     STYLE_EXTREME_DEF: "Çok savunma ağırlıklı",
 }
 
+# Stil bazlı varsayılan regresyon ağırlıkları.
+# Yüksek ağırlık = lig ortalamasına daha fazla güven (savunma ligleri kararlı).
+# Düşük ağırlık  = canlı tempoya daha fazla güven (kaotik ligler oyun oyun değişir).
+DEFAULT_REGRESSION_WEIGHTS: dict[str, float] = {
+    STYLE_EXTREME_RUN: 0.20,
+    STYLE_RUN:         0.25,
+    STYLE_UP:          0.38,
+    STYLE_BALANCED:    0.45,
+    STYLE_DEFENSIVE:   0.55,
+    STYLE_EXTREME_DEF: 0.65,
+}
+
 
 # ---------------------------------------------------------------------------
 # Heuristik kategori varsayılanları (katalog dışı ligler için)
@@ -54,6 +66,27 @@ STYLE_LABELS_TR: dict[str, str] = {
 # bantlardır; somut bir lig hedefi yoktur, sadece "bu sınıftan bir lig genelde
 # şu civarda olur" demektir. Kaynak: eurobasket.com aggregate, RealGM
 # international averages 2022-2025.
+
+# DNA Patch — elle kalibre edilmiş lig değerleri.
+# Katalog eşleşmesi olduğunda bu değerler ppm/base_total/regression_weight'i override eder.
+# base_total: o ligin gerçek sezon ortanca toplam puanı (ppm * dk ≠ base_total olabilir).
+_DNA_PATCH: dict[str, dict] = {
+    "NBA G League":             {"ppm": 4.85, "base_total": 227.5, "regression_weight": 0.20},
+    "Filipinler PBA":           {"ppm": 4.35, "base_total": 202.5, "regression_weight": 0.25},
+    "Çin CBA":                  {"ppm": 4.25, "base_total": 207.5, "regression_weight": 0.30},
+    "Tayvan PLG / TPBL":        {"ppm": 4.20, "base_total": 195.0, "regression_weight": 0.30},
+    "Yeni Zelanda NBL":         {"ppm": 4.10, "base_total": 182.5, "regression_weight": 0.30},
+    "Almanya BBL (easyCredit)": {"ppm": 4.00, "base_total": 167.5, "regression_weight": 0.40},
+    "Avustralya NBL":           {"ppm": 4.05, "base_total": 177.5, "regression_weight": 0.35},
+    "İspanya ACB (Liga Endesa)":{"ppm": 3.95, "base_total": 165.0, "regression_weight": 0.45},
+    "Japonya B.League":         {"ppm": 3.90, "base_total": 163.0, "regression_weight": 0.40},
+    "EuroLeague":               {"ppm": 3.80, "base_total": 160.0, "regression_weight": 0.50},
+    "Yunanistan A1 (GBL)":      {"ppm": 3.65, "base_total": 153.0, "regression_weight": 0.60},
+    "İtalya LBA (Lega A)":      {"ppm": 3.80, "base_total": 158.5, "regression_weight": 0.50},
+    "ABA Liga (Adriatik)":      {"ppm": 3.75, "base_total": 158.0, "regression_weight": 0.55},
+    "EuroLeague Women":         {"ppm": 3.50, "base_total": 141.5, "regression_weight": 0.65},
+    "WNBA":                     {"ppm": 3.95, "base_total": 163.0, "regression_weight": 0.40},
+}
 
 HEURISTIC_DEFAULTS: dict[str, dict] = {
     "mens_pro_tier1":  {"ppm": 4.05, "ortg": 107.0, "style": STYLE_BALANCED,    "minutes": 40, "periods": 4, "period_length": 10},
@@ -692,15 +725,23 @@ def detect_league_meta(event: dict) -> dict:
 
     catalog_entry = find_in_catalog(corpus)
     if catalog_entry:
+        key = catalog_entry["key"]
+        style = catalog_entry["style"]
+        patch = _DNA_PATCH.get(key, {})
+        ppm = patch.get("ppm", catalog_entry["ppm"])
+        base_total = patch.get("base_total", round(catalog_entry["ppm"] * catalog_entry["minutes"], 1))
+        reg_weight = patch.get("regression_weight", DEFAULT_REGRESSION_WEIGHTS.get(style, 0.45))
         return {
-            "league_type": catalog_entry["key"],
+            "league_type": key,
             "total_minutes": catalog_entry["minutes"],
             "period_count": catalog_entry["periods"],
             "period_length": catalog_entry["period_length"],
-            "baseline_ppm": catalog_entry["ppm"],
+            "baseline_ppm": ppm,
             "baseline_ortg": catalog_entry["ortg"],
-            "style": catalog_entry["style"],
-            "style_label": STYLE_LABELS_TR.get(catalog_entry["style"], catalog_entry["style"]),
+            "base_total": base_total,
+            "regression_weight": reg_weight,
+            "style": style,
+            "style_label": STYLE_LABELS_TR.get(style, style),
             "time_certainty": "high",
             "source": catalog_entry["source"],
             "matched_via": "catalog",
@@ -711,16 +752,21 @@ def detect_league_meta(event: dict) -> dict:
     certainty = "medium" if cat in {
         "college_m", "college_w", "national_team_m", "national_team_w", "three_x_three"
     } else "low"
+    style = defaults["style"]
+    ppm = defaults["ppm"]
+    minutes = defaults["minutes"]
 
     return {
         "league_type": f"Heuristik: {cat}",
-        "total_minutes": defaults["minutes"],
+        "total_minutes": minutes,
         "period_count": defaults["periods"],
         "period_length": defaults["period_length"],
-        "baseline_ppm": defaults["ppm"],
+        "baseline_ppm": ppm,
         "baseline_ortg": defaults["ortg"],
-        "style": defaults["style"],
-        "style_label": STYLE_LABELS_TR.get(defaults["style"], defaults["style"]),
+        "base_total": round(ppm * minutes, 1),
+        "regression_weight": DEFAULT_REGRESSION_WEIGHTS.get(style, 0.45),
+        "style": style,
+        "style_label": STYLE_LABELS_TR.get(style, style),
         "time_certainty": certainty,
         "source": f"Heuristik kategori varsayılanı ({cat}).",
         "matched_via": "heuristic",

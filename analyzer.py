@@ -41,6 +41,21 @@ _LOW_TEMPO_STYLES = {STYLE_DEFENSIVE, STYLE_EXTREME_DEF}
 # Bu sabit z-score'a eklenerek ALT sinyallerini kolaylaştırır, ÜST sinyallerini zorlaştırır.
 ALT_PRIOR = -0.25
 
+# DNA Kantitatif Motor sabitleri
+_ANOMALY_THRESHOLD = 0.40   # avg_ppm'den bu kadar sapma → "Ciddi Anomali" (<%15 sürdürülebilirlik)
+_TRAP_THRESHOLD = 6.0        # |fair_value - barem| bu değeri geçerse → TUZAK
+_PLAYOFF_PATTERNS = [r"playoff", r"play[\s-]?off", r"\bfinal\b", r"semifinal", r"quarter[\s-]?final"]
+
+
+def _is_playoff(event: dict) -> bool:
+    """Turnuva adı veya tur bilgisinden playoff/final tespiti."""
+    parts = [
+        ((event.get("tournament") or {}).get("name") or "").lower(),
+        ((event.get("roundInfo") or {}).get("name") or "").lower(),
+    ]
+    corpus = " ".join(parts)
+    return any(re.search(p, corpus) for p in _PLAYOFF_PATTERNS)
+
 
 # ---------------------------------------------------------------------------
 # Süre parse
@@ -364,6 +379,17 @@ def analyze(
         "script_label": None,
         # İleri metrikler
         "advanced": {},
+        # DNA Kantitatif Motor
+        "emp": None,
+        "current_ppm": None,
+        "raw_projected_total": None,
+        "fair_value": None,
+        "target_ppm": None,
+        "base_total": None,
+        "regression_weight": None,
+        "anomaly": None,
+        "trap": False,
+        "fatal_rule": None,
         # Karar
         "recommendation_side": "Veri yetersiz",
         "confidence_score": 0,
@@ -470,6 +496,69 @@ def analyze(
     # Verim endeksi
     if advanced.get("ortg") and meta["baseline_ortg"]:
         result["efficiency_index"] = round(advanced["ortg"] / meta["baseline_ortg"], 2)
+
+    # ================================================================
+    # DNA KANTİTATİF MOTOR
+    # Fair_Value = base_total * reg_weight + raw_projected * (1 - reg_weight)
+    # ================================================================
+    base_total = meta.get("base_total")
+    reg_weight = meta.get("regression_weight", 0.45)
+
+    if _is_playoff(event):
+        reg_weight = min(1.0, reg_weight + 0.15)
+        result["warnings"].append("Playoff/Final tespit edildi: regresyon ağırlığı +0.15 arttırıldı (savunma sıkılaşır).")
+
+    result["base_total"] = base_total
+    result["regression_weight"] = round(reg_weight, 2)
+
+    if (
+        time_info
+        and result["current_total"] is not None
+        and time_info["elapsed_min"] > 0
+    ):
+        _emp = time_info["elapsed_min"]
+        _total = time_info["total_min"]
+        _rem = time_info["remaining_min"]
+
+        _cur_ppm = result["current_total"] / _emp
+        _raw_proj = _cur_ppm * _total
+
+        result["emp"] = round(_emp, 2)
+        result["current_ppm"] = round(_cur_ppm, 2)
+        result["raw_projected_total"] = round(_raw_proj, 1)
+
+        # Fair Value (DNA Regresyon Formülü)
+        if base_total is not None:
+            _fv = base_total * reg_weight + _raw_proj * (1.0 - reg_weight)
+            result["fair_value"] = round(_fv, 1)
+
+        # Target PPM — baremin kalan sürede tutturulması için gereken hız
+        if live_line is not None and _rem > 0:
+            result["target_ppm"] = round((live_line - result["current_total"]) / _rem, 2)
+
+        # Kural 1 — Ciddi Anomali (sapma > ±0.40, sürdürülebilirlik <%15)
+        _baseline_ppm = meta.get("baseline_ppm")
+        if _baseline_ppm:
+            _dev = _cur_ppm - _baseline_ppm
+            if abs(_dev) > _ANOMALY_THRESHOLD:
+                _dir = "Yüksek" if _dev > 0 else "Düşük"
+                result["anomaly"] = (
+                    f"Ciddi Anomali ({_dir}): {_dev:+.2f} sapma — "
+                    f"mevcut temponu sürdürme ihtimali <%15"
+                )
+
+        # Kural 2 — Tuzak (|fair_value − barem| > 6.0)
+        if live_line is not None and result["fair_value"] is not None:
+            if abs(result["fair_value"] - live_line) > _TRAP_THRESHOLD:
+                result["trap"] = True
+
+        # Kural 3 — Taktik Faul Kaosu (son 3 dk, final periyodu, fark ≤ 5)
+        _is_final_p = (
+            time_info["current_period"] >= meta["period_count"]
+            and not time_info["in_overtime"]
+        )
+        if _is_final_p and _rem <= 3.0 and diff is not None and diff <= 5:
+            result["fatal_rule"] = "FAUL_KAOSU"
 
     # ---------------- Şut kalitesi (TS%) ----------------
     ts = advanced.get("ts_pct")
@@ -652,7 +741,8 @@ def analyze(
         if time_info and time_info.get("total_min")
         else 0.0
     )
-    side, confidence, conf_label, top_reasons = _decide(
+    # Z-score kararı (yedek sistem)
+    z_side, z_confidence, z_conf_label, z_top_reasons = _decide(
         final_z=final_z,
         base_z=base_z,
         modifiers=z_modifiers,
@@ -663,10 +753,24 @@ def analyze(
         progress=progress,
         league_certainty=meta["time_certainty"],
     )
-    result["recommendation_side"] = side
-    result["confidence_score"] = confidence
-    result["confidence_label"] = conf_label
-    result["reasons"] = top_reasons
+    # DNA kantitatif karar (birincil — mevcut olduğunda z-score'u geçersiz kılar)
+    q_result = _quantitative_decide(
+        fair_value=result["fair_value"],
+        live_line=live_line,
+        trap=result["trap"],
+        fatal_rule=result["fatal_rule"],
+        anomaly=result["anomaly"],
+    )
+    if q_result:
+        result["recommendation_side"] = q_result[0]
+        result["confidence_score"] = q_result[1]
+        result["confidence_label"] = q_result[2]
+        result["reasons"] = q_result[3]
+    else:
+        result["recommendation_side"] = z_side
+        result["confidence_score"] = z_confidence
+        result["confidence_label"] = z_conf_label
+        result["reasons"] = z_top_reasons
 
     # ---------------- Oyuncu notları ----------------
     notes = _player_notes(lineups_payload)
@@ -680,6 +784,71 @@ def analyze(
             )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# DNA Kantitatif karar motoru
+# ---------------------------------------------------------------------------
+
+def _quantitative_decide(
+    fair_value: Optional[float],
+    live_line: Optional[float],
+    trap: bool,
+    fatal_rule: Optional[str],
+    anomaly: Optional[str],
+) -> Optional[tuple[str, int, str, list[str]]]:
+    """DNA formüllerine dayalı birincil karar.
+
+    None döndürürse ana akış z-score sistemine düşer.
+    """
+    # Kural 3 — Taktik Faul Kaosu: her şeyi geçersiz kılar
+    if fatal_rule == "FAUL_KAOSU":
+        return (
+            "UZAK DUR - Taktik Faul Kaosu",
+            0,
+            "Pas",
+            ["Son 3 dk, fark ≤5: kasıtlı faul kaosu PPM matematiğini geçersiz kılar. Pas geç."],
+        )
+
+    if fair_value is None:
+        return None
+
+    reasons: list[str] = []
+    if anomaly:
+        reasons.append(anomaly)
+
+    # Barem yoksa DNA kararı veremeyiz (sadece trend)
+    if live_line is None:
+        return None
+
+    fv_diff = fair_value - live_line
+    abs_diff = abs(fv_diff)
+
+    # Kural 2 — Tuzak tespiti
+    if trap:
+        direction = "ALT" if fv_diff < 0 else "ÜST"
+        reasons.insert(0, (
+            f"TUZAK: Fair Value {fair_value} vs barem {live_line} = "
+            f"{fv_diff:+.1f} puan fark (eşik >{_TRAP_THRESHOLD})"
+        ))
+        return (
+            f"UZAK DUR - TUZAK ({direction} tarafı fiyatlanmış)",
+            80,
+            "Güçlü",
+            reasons,
+        )
+
+    # Ana karar: 4 puanlık eşikle ALT/ÜST — arasında z-score'a düş
+    conf = min(88, 50 + int(abs_diff * 4))
+    if fv_diff <= -4.0:
+        reasons.insert(0, f"Fair Value ({fair_value}) < barem ({live_line}): fark {fv_diff:.1f} puan")
+        return ("ALT eğilimli", conf, "Güçlü" if conf >= 75 else "Orta", reasons)
+    if fv_diff >= 4.0:
+        reasons.insert(0, f"Fair Value ({fair_value}) > barem ({live_line}): fark +{fv_diff:.1f} puan")
+        return ("ÜST eğilimli", conf, "Güçlü" if conf >= 75 else "Orta", reasons)
+
+    # Fark < 4 puan: DNA kararsız, z-score sistemine bırak
+    return None
 
 
 # ---------------------------------------------------------------------------
