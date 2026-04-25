@@ -441,9 +441,12 @@
             return;
         }
 
+        const styleSuffix = a.league_style_label ? ` · ${a.league_style_label}` : '';
+        const baselineSuffix = a.baseline_ppm ? ` · ort. ${a.baseline_ppm} sayı/dk` : '';
         $('detail-meta').textContent = a.league_type
-            ? `${a.league_type} · ${a.total_minutes} dk`
+            ? `${a.league_type} · ${a.total_minutes} dk${styleSuffix}${baselineSuffix}`
             : '';
+        $('detail-meta').title = a.league_source || '';
 
         const hs = ev.home_score ?? '-';
         const as = ev.away_score ?? '-';

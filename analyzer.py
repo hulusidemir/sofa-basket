@@ -22,89 +22,20 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-
-# ---------------------------------------------------------------------------
-# Lig baseline'ları (toplam pts/min ve takım başına ORtg)
-# ---------------------------------------------------------------------------
-#
-# ppm = iki takımın toplam puanı / dakika, sezonluk ortalama
-# ortg = puan / 100 possession (takım başına; iki takım yakın)
-#
-# Kaynaklar: NBA 2023-25 ortalamaları, EuroLeague/WNBA/NCAA resmi sezon
-# özetleri. Sayılar ±%2 içinde varsayım kabul edilebilir.
-
-LEAGUE_BASELINES: dict[str, dict[str, float]] = {
-    "NBA":                   {"ppm": 4.65, "ortg": 115.0},
-    "WNBA":                  {"ppm": 3.95, "ortg": 102.0},
-    "NCAA Erkek":            {"ppm": 3.55, "ortg": 105.0},
-    "NCAA Kadın":            {"ppm": 3.45, "ortg": 95.0},
-    "Uluslararası / FIBA":   {"ppm": 4.00, "ortg": 108.0},
-}
+from league_catalog import (
+    STYLE_DEFENSIVE,
+    STYLE_EXTREME_DEF,
+    STYLE_EXTREME_RUN,
+    STYLE_RUN,
+    STYLE_UP,
+    detect_league_meta,
+)
 
 
-def detect_league_meta(event: dict) -> dict:
-    """Lig tipini, maç süresini ve baseline'larını tahmin et."""
-
-    tournament = (event or {}).get("tournament") or {}
-    unique_t = tournament.get("uniqueTournament") or {}
-    category = tournament.get("category") or {}
-    home = (event or {}).get("homeTeam") or {}
-    away = (event or {}).get("awayTeam") or {}
-
-    corpus = " ".join(
-        str(x)
-        for x in [
-            tournament.get("name"),
-            unique_t.get("name"),
-            category.get("name"),
-            category.get("slug"),
-            home.get("name"),
-            away.get("name"),
-        ]
-        if x
-    ).lower()
-
-    is_wnba = "wnba" in corpus
-    is_nba = (not is_wnba) and (
-        re.search(r"\bnba\b", corpus) is not None
-        or corpus.startswith("nba ")
-        or " nba " in corpus
-    )
-    is_ncaa = "ncaa" in corpus or "college basketball" in corpus
-    is_ncaa_women = is_ncaa and ("women" in corpus or "kadın" in corpus)
-
-    league_type = "Uluslararası / FIBA"
-    total_minutes, period_count, period_length = 40, 4, 10
-    time_certainty = "assumed"
-
-    if is_nba:
-        league_type = "NBA"
-        total_minutes, period_count, period_length = 48, 4, 12
-        time_certainty = "high"
-    elif is_wnba:
-        league_type = "WNBA"
-        total_minutes, period_count, period_length = 40, 4, 10
-        time_certainty = "high"
-    elif is_ncaa and not is_ncaa_women:
-        league_type = "NCAA Erkek"
-        total_minutes, period_count, period_length = 40, 2, 20
-        time_certainty = "medium"
-    elif is_ncaa_women:
-        league_type = "NCAA Kadın"
-        total_minutes, period_count, period_length = 40, 4, 10
-        time_certainty = "medium"
-
-    baseline = LEAGUE_BASELINES.get(league_type, LEAGUE_BASELINES["Uluslararası / FIBA"])
-
-    return {
-        "total_minutes": total_minutes,
-        "period_count": period_count,
-        "period_length": period_length,
-        "league_type": league_type,
-        "time_certainty": time_certainty,
-        "baseline_ppm": baseline["ppm"],
-        "baseline_ortg": baseline["ortg"],
-    }
+# Pace anomali eşikleri — üslup-duyarlı modifier için.
+# pace_index = mevcut raw_pace / lig baseline_ppm
+_HIGH_TEMPO_STYLES = {STYLE_EXTREME_RUN, STYLE_RUN, STYLE_UP}
+_LOW_TEMPO_STYLES = {STYLE_DEFENSIVE, STYLE_EXTREME_DEF}
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +333,9 @@ def analyze(
 
     result: dict[str, Any] = {
         "league_type": None,
+        "league_style": None,
+        "league_style_label": None,
+        "league_source": None,
         "baseline_ppm": None,
         "baseline_ortg": None,
         "total_minutes": None,
@@ -443,12 +377,21 @@ def analyze(
 
     meta = detect_league_meta(event)
     result["league_type"] = meta["league_type"]
+    result["league_style"] = meta.get("style")
+    result["league_style_label"] = meta.get("style_label")
+    result["league_source"] = meta.get("source")
     result["total_minutes"] = meta["total_minutes"]
     result["baseline_ppm"] = meta["baseline_ppm"]
     result["baseline_ortg"] = meta["baseline_ortg"]
-    if meta["time_certainty"] != "high":
+    if meta["time_certainty"] == "medium":
         result["warnings"].append(
-            f"Lig kesin tespit edilemedi (varsayım: {meta['league_type']}, {meta['total_minutes']} dk)."
+            f"Lig katalogda yok; sınıf varsayılanları uygulandı ({meta['league_type']}, "
+            f"{meta['total_minutes']} dk, {meta.get('style_label')})."
+        )
+    elif meta["time_certainty"] == "low":
+        result["warnings"].append(
+            f"Lig katalogda yok; en yakın heuristik kategoriye düşürüldü "
+            f"({meta['league_type']}, {meta['total_minutes']} dk). Doğruluk düşük olabilir."
         )
 
     home_score_obj = (event.get("homeScore") or {})
@@ -491,6 +434,14 @@ def analyze(
         # Projeksiyon: kalan süreye lig ortalamasına doğru hafif Bayesian shrinkage
         # uygulanır (erken bölümde lig ortalamasına %30, geç bölümde %5 ağırlık).
         shrink = max(0.05, 0.30 * (1.0 - progress) ** 1.5)
+        # Üslup-duyarlı: koş-at ligi anormal düşük tempoda ya da savunma ligi
+        # anormal yüksek tempoda olduğunda baseline'a daha güçlü çek (regresyon
+        # tarihsel olarak güçlü).
+        style = meta.get("style")
+        if style in _HIGH_TEMPO_STYLES and raw_pace < meta["baseline_ppm"] * 0.85:
+            shrink = min(0.65, shrink * 2.0)
+        elif style in _LOW_TEMPO_STYLES and raw_pace > meta["baseline_ppm"] * 1.20:
+            shrink = min(0.55, shrink * 1.7)
         future_pace = raw_pace * (1.0 - shrink) + meta["baseline_ppm"] * shrink
         projected = result["current_total"] + future_pace * remaining
 
@@ -605,13 +556,35 @@ def analyze(
         elif tov_pct <= 0.11:
             z_modifiers.append((+0.15, "TOV%% düşük - temiz hücumlar"))
 
-    # Pace, ÜST/ALT'ın asıl belirleyicilerinden biri ama zaten projeksiyona
-    # gömüldü; burada sadece sürdürülebilirliği yorumluyoruz.
-    if result["pace_index"]:
-        if result["pace_index"] >= 1.15:
-            z_modifiers.append((+0.15, f"Tempo lig ort. {(result['pace_index']-1)*100:.0f}%% üstünde"))
-        elif result["pace_index"] <= 0.85:
-            z_modifiers.append((-0.15, f"Tempo lig ort. {(1-result['pace_index'])*100:.0f}%% altında"))
+    # Pace ÜST/ALT'ın asıl belirleyicilerinden biri ve projeksiyona zaten
+    # gömüldü; burada üslup-duyarlı anomali sinyali ekliyoruz:
+    #   - Koş-at ligi (NBA, CBA, PBA, İzlanda, NBL...) anormal düşük tempoda →
+    #     güçlü ÜST regresyon sinyali (lig hızı sticky, mean-reversion güçlü).
+    #   - Savunma ligi (Yunanistan A1, Kore KBL, EuroLeague, AfroBasket) anormal
+    #     yüksek tempoda → güçlü ALT regresyon sinyali.
+    pace_idx = result["pace_index"]
+    if pace_idx:
+        league_style = meta.get("style")
+        league_name = meta.get("league_type") or "lig"
+        pct_diff = (pace_idx - 1.0) * 100
+        if league_style in (STYLE_EXTREME_RUN, STYLE_RUN) and pace_idx <= 0.82:
+            boost = 0.55 if league_style == STYLE_EXTREME_RUN else 0.40
+            z_modifiers.append((
+                +boost,
+                f"{league_name} koş-at karakterli ama tempo lig ort. {abs(pct_diff):.0f}% altında "
+                f"(pace_idx={pace_idx:.2f}) - regresyonla açılması bekleniyor",
+            ))
+        elif league_style in (STYLE_DEFENSIVE, STYLE_EXTREME_DEF) and pace_idx >= 1.18:
+            boost = 0.55 if league_style == STYLE_EXTREME_DEF else 0.45
+            z_modifiers.append((
+                -boost,
+                f"{league_name} savunma ağırlıklı ama tempo lig ort. {abs(pct_diff):.0f}% üstünde "
+                f"(pace_idx={pace_idx:.2f}) - regresyonla yavaşlama bekleniyor",
+            ))
+        elif pace_idx >= 1.15:
+            z_modifiers.append((+0.15, f"Tempo lig ort. {abs(pct_diff):.0f}% üstünde - sürdürülebilir"))
+        elif pace_idx <= 0.85:
+            z_modifiers.append((-0.15, f"Tempo lig ort. {abs(pct_diff):.0f}% altında - düşük seyir"))
 
     if script_mod:
         z_modifiers.append(script_mod)
