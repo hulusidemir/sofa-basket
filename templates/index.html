@@ -645,18 +645,43 @@
             ? (a.regression_weight * 100).toFixed(0) + '%' : '—';
         const currentPpm  = a.current_ppm != null ? a.current_ppm : (rawPace !== '—' ? rawPace : '—');
 
-        const periodLen   = a.period_length || 10;
-        const periodCount = a.period_count  || 4;
+        const periodLen    = a.period_length || 10;
+        const periodCount  = a.period_count  || 4;
         const periodScores = ev.period_scores || [];
+        const curPeriod    = a.current_period;
+        const elapsedTotal = a.elapsed_minutes;
+
+        // Tamamlanmış periyotların toplam süresi (dakika)
+        function completedPeriodMin(periodNum) {
+            if (periodNum <= periodCount) return (periodNum - 1) * periodLen;
+            return periodCount * periodLen + (periodNum - periodCount - 1) * 5;
+        }
+
         const quarterPpmHtml = (() => {
             if (!periodScores.length) return '';
             const items = periodScores.map(p => {
                 const total = (p.home ?? 0) + (p.away ?? 0);
                 const isOt  = p.period > periodCount;
-                const dur   = isOt ? 5 : periodLen;
-                const ppm   = dur > 0 ? (total / dur).toFixed(2) : '—';
                 const label = isOt ? `OT${p.period - periodCount}` : `Q${p.period}`;
-                return `<span style="white-space:nowrap"><span style="color:var(--muted);font-size:10px;">${label}</span> <strong>${ppm}</strong></span>`;
+
+                let dur;
+                // Mevcut oynanmakta olan çeyrek mi?
+                if (p.period === curPeriod && elapsedTotal != null) {
+                    const elapsedInQ = elapsedTotal - completedPeriodMin(p.period);
+                    dur = elapsedInQ > 0.5 ? elapsedInQ : (isOt ? 5 : periodLen);
+                } else {
+                    dur = isOt ? 5 : periodLen;
+                }
+
+                const ppm   = dur > 0 ? (total / dur).toFixed(2) : '—';
+                const isCur = p.period === curPeriod;
+                const style = isCur
+                    ? 'color:var(--accent); font-weight:700;'
+                    : '';
+                const labelStyle = isCur
+                    ? 'color:var(--accent);font-size:10px;'
+                    : 'color:var(--muted);font-size:10px;';
+                return `<span style="white-space:nowrap"><span style="${labelStyle}">${label}${isCur ? '▸' : ''}</span> <strong style="${style}">${ppm}</strong></span>`;
             });
             return `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:8px; font-size:12px;">${items.join('')}</div>`;
         })();
