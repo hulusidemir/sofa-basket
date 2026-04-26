@@ -37,9 +37,7 @@ from league_catalog import (
 _HIGH_TEMPO_STYLES = {STYLE_EXTREME_RUN, STYLE_RUN, STYLE_UP}
 _LOW_TEMPO_STYLES = {STYLE_DEFENSIVE, STYLE_EXTREME_DEF}
 
-# Kullanıcı tercihi: basketbolda alt oynama önyargısı.
-# Bu sabit z-score'a eklenerek ALT sinyallerini kolaylaştırır, ÜST sinyallerini zorlaştırır.
-ALT_PRIOR = -0.25
+# DNA Karar Motoru sabitleri
 
 # DNA Kantitatif Motor sabitleri
 _ANOMALY_THRESHOLD = 0.40   # avg_ppm'den bu kadar sapma → "Ciddi Anomali" (<%15 sürdürülebilirlik)
@@ -686,8 +684,6 @@ def analyze(
     if script_mod:
         z_modifiers.append(script_mod)
 
-    # Yapısal ALT tercihi: basketbolda alt oynama önyargısı
-    z_modifiers.append((ALT_PRIOR, "Yapısal ALT tercihi (kullanıcı tercihi: basketbolda alt)"))
 
     # ---------------- Z-score: anchor bul, sapmayı sigmaya böl ----------------
     # Anchor sadece barem girildiyse aktif. Barem yoksa karar tamamen maçın iç
@@ -925,12 +921,11 @@ def _decide(
         quality += 0.15
     quality = min(1.0, quality)
 
-    # Karar yönü — asimetrik eşikler: ALT sinyali için düşük bar, ÜST için yüksek bar.
-    # ALT_PRIOR (-0.25) zaten final_z'yi aşağı çekiyor; eşikler bunu pekiştirir.
+    # Karar yönü — simetrik eşikler: ÜST ve ALT eşit koşullarda değerlendiriliyor.
     if base_z is not None:
-        over_thr, under_thr, mixed_thr = 0.95, -0.50, 0.30
+        over_thr, under_thr, mixed_thr = 0.65, -0.65, 0.30
     else:
-        over_thr, under_thr, mixed_thr = 0.65, -0.25, 0.20
+        over_thr, under_thr, mixed_thr = 0.40, -0.40, 0.20
 
     if final_z >= over_thr:
         side = "ÜST eğilimli"
