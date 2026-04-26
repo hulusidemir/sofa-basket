@@ -824,22 +824,19 @@ def _quantitative_decide(
     fv_diff = fair_value - live_line
     abs_diff = abs(fv_diff)
 
-    # Kural 2 — Tuzak tespiti
+    # Kural 2 — Tuzak: kararı geçersiz kılmaz, güveni kırar ve uyarı ekler
     if trap:
         direction = "ALT" if fv_diff < 0 else "ÜST"
-        reasons.insert(0, (
-            f"TUZAK: Fair Value {fair_value} vs barem {live_line} = "
-            f"{fv_diff:+.1f} puan fark (eşik >{_TRAP_THRESHOLD})"
-        ))
-        return (
-            f"UZAK DUR - TUZAK ({direction} tarafı fiyatlanmış)",
-            80,
-            "Güçlü",
-            reasons,
+        reasons.append(
+            f"Tuzak uyarısı: {abs_diff:.1f} puan fark büyük — "
+            f"{direction} tarafı aşırı fiyatlanmış olabilir"
         )
 
     # Ana karar: 4 puanlık eşikle ALT/ÜST — arasında z-score'a düş
     conf = min(88, 50 + int(abs_diff * 4))
+    if trap:
+        conf = max(20, conf - 15)  # Tuzak varsa güveni kır ama kararı ezme
+
     if fv_diff <= -4.0:
         reasons.insert(0, f"Fair Value ({fair_value}) < barem ({live_line}): fark {fv_diff:.1f} puan")
         return ("ALT eğilimli", conf, "Güçlü" if conf >= 75 else "Orta", reasons)

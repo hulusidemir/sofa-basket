@@ -693,7 +693,7 @@
             ? (a.fair_value - data.live_line) : null;
         const trapSign    = trapDiffVal != null ? (trapDiffVal >= 0 ? '+' : '') + trapDiffVal.toFixed(1) : '?';
         const trapHtml    = a.trap
-            ? `<div class="trap-badge">🔴 TUZAK: Fair Value ${fairValue} — Barem ${data.live_line ?? '?'} = ${trapSign} puan fark</div>` : '';
+            ? `<div class="trap-badge">⚠ Tuzak: Fair Value ${fairValue} — Barem ${data.live_line ?? '?'} = ${trapSign} puan fark (büyük sapma, dikkatli ol)</div>` : '';
 
         const keyMetricsHtml = `
           ${anomalyHtml}${trapHtml}
