@@ -249,6 +249,14 @@
         @media (max-width: 860px) {
             .back-btn.visible { display: inline-block; }
         }
+        .copy-btn {
+            background: var(--panel-2); color: var(--muted);
+            border: 1px solid var(--border); padding: 5px 10px; border-radius: 6px;
+            cursor: pointer; font-size: 12px; font-weight: 500;
+            transition: color 120ms, border-color 120ms;
+        }
+        .copy-btn:hover { color: var(--text); border-color: var(--accent); }
+        .copy-btn.copied { color: var(--under); border-color: var(--under); }
 
         .player-notes {
             padding: 10px 16px;
@@ -344,7 +352,10 @@
                     <button class="back-btn" id="back-btn">← Geri</button>
                     Maç analizi
                 </span>
-                <span class="meta" id="detail-meta" style="font-weight:400; color: var(--muted);"></span>
+                <span style="display:flex; align-items:center; gap:10px;">
+                    <span class="meta" id="detail-meta" style="font-weight:400; color: var(--muted);"></span>
+                    <button class="copy-btn" id="copy-json-btn" title="Analizi JSON olarak kopyala (Gemini için)" style="display:none;">⎘ JSON Kopyala</button>
+                </span>
             </div>
             <div id="detail-body">
                 <div class="empty">Sol taraftan bir maç seç.</div>
@@ -468,6 +479,7 @@
         renderList();
         $('detail-panel').classList.remove('hidden-mobile');
         $('back-btn').classList.add('visible');
+        $('copy-json-btn').style.display = 'none';
         $('detail-body').innerHTML = '<div class="loading">Analiz hazırlanıyor...</div>';
 
         try {
@@ -487,6 +499,112 @@
         if (side.startsWith('Karışık')) return 'mixed';
         if (side === 'Pas') return 'pass';
         return 'nodata';
+    }
+
+    function buildGeminiJson(data) {
+        const { event: ev, analysis: a } = data;
+        const adv = a.advanced || {};
+        const s = a.stats || {};
+
+        function statPair(key) {
+            const r = s[key];
+            return r ? { ev: r.home, dep: r.away } : undefined;
+        }
+        function maPair(mKey, aKey) {
+            const m = s[mKey], at = s[aKey];
+            if (!m || !at) return undefined;
+            return {
+                ev: `${m.home ?? '-'}/${at.home ?? '-'}`,
+                dep: `${m.away ?? '-'}/${at.away ?? '-'}`,
+            };
+        }
+
+        return {
+            mac: {
+                ev_takim: ev?.home?.name,
+                dep_takim: ev?.away?.name,
+                skor: `${ev?.home_score ?? '-'} - ${ev?.away_score ?? '-'}`,
+                toplam_skor: a.current_total,
+                turnuva: ev?.tournament,
+                durum: ev?.status_description,
+                periyot_skorlari: (ev?.period_scores || []).map(p => ({
+                    periyot: p.period,
+                    ev: p.home,
+                    dep: p.away,
+                })),
+            },
+            sure: {
+                gecen_dk: a.elapsed_minutes,
+                kalan_dk: a.remaining_minutes,
+                toplam_dk: a.total_minutes,
+                mevcut_periyot: a.current_period,
+                uzatma: a.in_overtime,
+            },
+            lig: {
+                tip: a.league_type,
+                stil: a.league_style_label,
+                baseline_ppm: a.baseline_ppm,
+                baseline_ortg: a.baseline_ortg,
+                beklenen_toplam: a.league_expected_total,
+            },
+            projeksiyon: {
+                ham_projeksiyon: a.raw_projected_total,
+                sigma: a.sigma,
+                mevcut_ppm: a.current_ppm,
+                pace_index: a.pace_index,
+                pace_etiketi: a.pace_label,
+            },
+            dna_motor: {
+                fair_value: a.fair_value,
+                base_total: a.base_total,
+                regresyon_agirligi: a.regression_weight,
+                anomali: a.anomaly,
+                tuzak: a.trap,
+                hedef_ppm: a.target_ppm,
+            },
+            karar: {
+                tavsiye: a.recommendation_side,
+                guven_skoru: a.confidence_score,
+                guven_etiketi: a.confidence_label,
+                z_skoru: a.z_score,
+                nedenler: a.reasons,
+                uyarilar: a.warnings,
+                barem: data.live_line ?? null,
+                barem_vs_proj: a.value_vs_line ?? null,
+            },
+            ileri_metrikler: {
+                possessions: adv.possessions,
+                ortg: adv.ortg,
+                efg_pct: adv.efg_pct,
+                ts_pct: adv.ts_pct,
+                ftr: adv.ftr,
+                orb_pct: adv.orb_pct,
+                tov_pct: adv.tov_pct,
+                verim_endeksi: a.efficiency_index,
+            },
+            etiketler: {
+                sut_kalitesi: a.shot_quality_label,
+                faul_ft_baskisi: a.foul_pressure_label,
+                top_kaybi: a.turnover_label,
+                ribaund: a.rebound_label,
+                mac_scripti: a.script_label,
+            },
+            istatistikler: {
+                saha_ici: maPair('fg_made', 'fg_att'),
+                iki_sayi: maPair('two_made', 'two_att'),
+                uc_sayi: maPair('three_made', 'three_att'),
+                serbest_atis: maPair('ft_made', 'ft_att'),
+                toplam_ribaund: statPair('rebounds_total'),
+                hucum_ribaund: statPair('offensive_rebounds'),
+                savunma_ribaund: statPair('defensive_rebounds'),
+                asist: statPair('assists'),
+                top_kaybi: statPair('turnovers'),
+                top_calma: statPair('steals'),
+                blok: statPair('blocks'),
+                faul: statPair('fouls'),
+            },
+            oyuncu_notlari: a.player_notes || [],
+        };
     }
 
     function renderDetail(data) {
@@ -527,6 +645,22 @@
             ? (a.regression_weight * 100).toFixed(0) + '%' : '—';
         const currentPpm  = a.current_ppm != null ? a.current_ppm : (rawPace !== '—' ? rawPace : '—');
 
+        const periodLen   = a.period_length || 10;
+        const periodCount = a.period_count  || 4;
+        const periodScores = ev.period_scores || [];
+        const quarterPpmHtml = (() => {
+            if (!periodScores.length) return '';
+            const items = periodScores.map(p => {
+                const total = (p.home ?? 0) + (p.away ?? 0);
+                const isOt  = p.period > periodCount;
+                const dur   = isOt ? 5 : periodLen;
+                const ppm   = dur > 0 ? (total / dur).toFixed(2) : '—';
+                const label = isOt ? `OT${p.period - periodCount}` : `Q${p.period}`;
+                return `<span style="white-space:nowrap"><span style="color:var(--muted);font-size:10px;">${label}</span> <strong>${ppm}</strong></span>`;
+            });
+            return `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:8px; font-size:12px;">${items.join('')}</div>`;
+        })();
+
         const anomalyHtml = a.anomaly
             ? `<div class="anomaly-badge">⚠ ${escapeHtml(a.anomaly)}</div>` : '';
 
@@ -553,6 +687,7 @@
               <div class="kh">PPM &nbsp;/&nbsp; Hedef PPM</div>
               <div class="kv">${currentPpm}<span class="unit"> sayı/dk</span></div>
               <div class="ksub">Lig: ${a.baseline_ppm ?? '—'} &nbsp;·&nbsp; Hedef: ${targetPpm} &nbsp;·&nbsp; ${escapeHtml(a.pace_label || '—')}</div>
+              ${quarterPpmHtml}
             </div>
           </div>
         `;
@@ -674,6 +809,37 @@
         $('live-line').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') $('apply-line').click();
         });
+
+        const copyBtn = $('copy-json-btn');
+        copyBtn.style.display = 'inline-block';
+        copyBtn.onclick = async () => {
+            if (!state.lastAnalysis) return;
+            const payload = buildGeminiJson(state.lastAnalysis);
+            const text = JSON.stringify(payload, null, 2);
+            try {
+                await navigator.clipboard.writeText(text);
+                copyBtn.textContent = '✓ Kopyalandı';
+                copyBtn.classList.add('copied');
+                setTimeout(() => {
+                    copyBtn.textContent = '⎘ JSON Kopyala';
+                    copyBtn.classList.remove('copied');
+                }, 2000);
+            } catch {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed'; ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                copyBtn.textContent = '✓ Kopyalandı';
+                copyBtn.classList.add('copied');
+                setTimeout(() => {
+                    copyBtn.textContent = '⎘ JSON Kopyala';
+                    copyBtn.classList.remove('copied');
+                }, 2000);
+            }
+        };
     }
 
     function renderStatsTable(ev, a) {

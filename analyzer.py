@@ -358,6 +358,8 @@ def analyze(
         "baseline_ppm": None,
         "baseline_ortg": None,
         "total_minutes": None,
+        "period_length": None,
+        "period_count": None,
         "elapsed_minutes": None,
         "remaining_minutes": None,
         "current_period": None,
@@ -411,6 +413,8 @@ def analyze(
     result["league_style_label"] = meta.get("style_label")
     result["league_source"] = meta.get("source")
     result["total_minutes"] = meta["total_minutes"]
+    result["period_length"] = meta.get("period_length", 10)
+    result["period_count"] = meta.get("period_count", 4)
     result["baseline_ppm"] = meta["baseline_ppm"]
     result["baseline_ortg"] = meta["baseline_ortg"]
     if meta["time_certainty"] == "medium":
